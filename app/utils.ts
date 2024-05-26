@@ -19,6 +19,11 @@ export function handleConnection(connection: Socket, data: Buffer) {
       break;
     case "set":
       db.set(args[1], args[3]);
+      if (args[5] != undefined && args[5].toLowerCase() === "px") {
+        setTimeout(() => {
+          db.delete(args[1]);
+        }, +args[7]);
+      }
       connection.write(simpleString("OK"));
       break;
     case "get":
