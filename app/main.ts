@@ -1,5 +1,5 @@
 import * as net from "node:net";
-import { bulkString, handleConnection, simpleString } from "./utils";
+import { handleConnection } from "./utils";
 
 const server: net.Server = net.createServer((connection: net.Socket) => {
   // Handle connection
@@ -14,11 +14,12 @@ const server: net.Server = net.createServer((connection: net.Socket) => {
   connection.on("data", (data) => {
     handleConnection(connection, data);
   });
+
   connection.on("end", () => {
-    console.log("end\n");
+    console.log("connection is ended");
   });
   connection.on("close", () => {
-    console.log("close\n");
+    console.log("connection is closed");
   });
   connection.on("error", (error: Error) => {
     console.log(`Error: ${error}\n`);
