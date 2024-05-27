@@ -10,12 +10,12 @@ const server = net.createServer((connection) => {
   console.log("Client connected");
 
   // Handle data received from the client
-  connection.on("data", (data) => {
+  connection.on("data", async (data) => {
     console.log("Received data:", data.toString());
 
     try {
       const command = parseRESP(data);
-      const response = handleCommand(command);
+      const response = await handleCommand(command);
       console.log("Sent data ", response);
       connection.write(response);
     } catch (error) {

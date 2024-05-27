@@ -1,10 +1,17 @@
+import { parseRDB } from "./BinaryReader";
 import { RedisStore } from "./store";
-import { bulkString, simpleString } from "./utils";
+import {
+  RDBFilePath,
+  arrToRESP,
+  bulkString,
+  parseArguments,
+  simpleString,
+} from "./utils";
 
 // In-memory key-value store
 const store = new RedisStore();
 
-export function handleCommand(command: string[]): string {
+export async function handleCommand(command: string[]): Promise<string> {
   const [cmd, ...args] = command;
 
   switch (cmd.toUpperCase()) {
@@ -18,6 +25,10 @@ export function handleCommand(command: string[]): string {
       return handleGet(args);
     case "DEL":
       return handleDel(args);
+    case "CONFIG":
+      return handleConfig(args);
+    case "KEYS":
+      return await handleRDB(args);
     default:
       return "-ERR unknown command\r\n";
   }
@@ -67,4 +78,37 @@ function handleDel(args: string[]): string {
 
 function handleEcho(args: string[]) {
   return args.length > 0 ? simpleString(args[0]) : simpleString("");
+}
+
+function handleConfig(args: string[]) {
+  const params = parseArguments();
+  if (args.length < 2) {
+    return "-ERR wrong number of arguments for 'CONFIG' command\r\n";
+  }
+  const [command, key] = args;
+  if (command.toUpperCase() == "GET") {
+    const value = params[key];
+    if (!value) return "-ERR unknown command\r\n";
+    return arrToRESP([key, value]);
+  }
+
+  return "-ERR unknown command\r\n";
+}
+
+async function handleRDB(args: string[]) {
+  const filePath = RDBFilePath;
+  // || "./tmp/redis-files/dump.rdb";
+  const searchKey = args[0];
+  let response;
+  try {
+    const value = await parseRDB(filePath, searchKey);
+
+    console.log(`Value for key "${searchKey}":`, value);
+    response = arrToRESP([value]);
+  } catch (error: any) {
+    console.error(error?.message);
+    response = arrToRESP([]);
+  }
+
+  return response;
 }
