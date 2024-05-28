@@ -1,5 +1,3 @@
-// utils/store.ts
-
 export class RedisStore {
   private store: Map<string, string>;
 
@@ -13,6 +11,13 @@ export class RedisStore {
 
   get(key: string): string | undefined {
     return this.store.get(key);
+  }
+  getKeys() {
+    return Array.from(this.store.keys());
+  }
+
+  getEntries() {
+    return Array.from(this.store.entries());
   }
 
   delete(key: string): boolean {

@@ -1,4 +1,5 @@
 import path from "path";
+import { serverConfig } from "./types";
 
 export function parseRESP(buffer: Buffer): string[] {
   const data = buffer.toString();
@@ -35,7 +36,7 @@ export const bulkString = (reply?: string) =>
 
 export function arrToRESP(arr: string[]) {
   const len = arr.length;
-  if (len == 0) return "*1\r\n";
+  if (len == 0) return "*0\r\n";
   return arr.reduce((acc: string, cur: string) => {
     acc += bulkString(cur);
     return acc;
@@ -55,7 +56,17 @@ export function parseArguments() {
   return params;
 }
 
-export const RDBFilePath = path.resolve(
-  parseArguments()["dir"] || "",
-  parseArguments()["dbfilename"] || ""
-);
+export const rdbConfig: serverConfig = {
+  dir: parseArguments()["dir"] || "",
+  dbfilename: parseArguments()["dbfilename"] || "",
+};
+// export const RDBFilePath = path.join(rdbConfig.dir, rdbConfig.dbfilename);
+
+export function stringToBytes(s: string): Uint8Array {
+  return new Uint8Array(s.split("").map((s: string) => s.charCodeAt(0)));
+}
+export function bytesToString(arr: Uint8Array): string {
+  return Array.from(arr)
+    .map((n) => String.fromCharCode(n))
+    .join("");
+}

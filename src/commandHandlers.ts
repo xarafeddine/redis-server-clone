@@ -1,15 +1,19 @@
-import { parseRDB } from "./BinaryReader";
+import { loadRdb } from "./BinaryReader";
 import { RedisStore } from "./store";
 import {
-  RDBFilePath,
   arrToRESP,
   bulkString,
   parseArguments,
+  rdbConfig,
   simpleString,
 } from "./utils";
 
 // In-memory key-value store
 const store = new RedisStore();
+const kvStore = loadRdb(rdbConfig);
+Object.entries(kvStore).forEach(([key, { value }]) => {
+  store.set(key, value);
+});
 
 export async function handleCommand(command: string[]): Promise<string> {
   const [cmd, ...args] = command;
@@ -96,18 +100,12 @@ function handleConfig(args: string[]) {
 }
 
 async function handleRDB(args: string[]) {
-  const filePath = RDBFilePath;
-  // || "./tmp/redis-files/dump.rdb";
-  const searchKey = args[0];
+  const searchKey = args[0] || "*";
   let response;
-  try {
-    const value = await parseRDB(filePath, searchKey);
-
-    console.log(`Value for key "${searchKey}":`, value);
-    response = arrToRESP([value]);
-  } catch (error: any) {
-    console.error(error?.message);
-    response = arrToRESP([]);
+  if (searchKey == "*") response = arrToRESP(store.getKeys());
+  else {
+    const value = store.get(searchKey);
+    response = arrToRESP(value == undefined ? [] : [value]);
   }
 
   return response;

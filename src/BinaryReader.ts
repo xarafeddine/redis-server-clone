@@ -1,206 +1,161 @@
 import * as fs from "fs";
 import path from "path";
-import { RDBFilePath } from "./utils";
+import { keyValueStore, serverConfig } from "./types";
+import { bytesToString } from "./utils";
 
-const REDIS_RDB_OPCODE_EXPIRETIME_MS = 252;
-const REDIS_RDB_OPCODE_EXPIRETIME = 253;
-const REDIS_RDB_OPCODE_SELECTDB = 254;
-const REDIS_RDB_OPCODE_EOF = 255;
-
-const RDB_TYPE_STRING = 0;
-
-export class BinaryReader {
-  buffer: Buffer;
-  offset: number = 0;
-
-  constructor(buffer: Buffer) {
-    this.buffer = buffer;
+export function loadRdb(conf: serverConfig): keyValueStore {
+  if (conf.dbfilename === "") {
+    return {};
   }
+  const rp = new RDBParser(path.join(conf.dir, conf.dbfilename));
+  rp.parse();
+  return rp.getEntries();
+}
 
-  readByte(): number {
-    return this.buffer.readUInt8(this.offset++);
+class RDBParser {
+  path: string;
+  data: Uint8Array;
+  index: number = 0;
+  entries: keyValueStore = {};
+  constructor(path: string) {
+    this.path = path;
+    try {
+      this.data = fs.readFileSync(this.path);
+    } catch (e:any) {
+      console.log(`skipped reading RDB file: ${this.path}`);
+      console.log(e?.message);
+      this.data = new Uint8Array();
+      return;
+    }
   }
-
-  readUInt32(): number {
-    const value = this.buffer.readUInt32BE(this.offset);
-    this.offset += 4;
-    return value;
+  parse() {
+    if (this.data?.length === 0) {
+      return;
+    }
+    if (bytesToString(this.data.slice(0, 5)) !== "REDIS") {
+      console.log(`not a RDB file: ${this.path}`);
+      return;
+    }
+    console.log("Version:", bytesToString(this.data.slice(5, 9)));
+    // skipping header and version
+    this.index = 9;
+    let eof = false;
+    while (!eof && this.index < this.data.length) {
+      const op = this.data[this.index++];
+      switch (op) {
+        case 0xfa: {
+          const key = this.readEncodedString();
+          switch (key) {
+            case "redis-ver":
+              console.log(key, this.readEncodedString());
+              break;
+            case "redis-bits":
+              console.log(key, this.readEncodedInt());
+              break;
+            case "ctime":
+              console.log(key, new Date(this.readEncodedInt() * 1000));
+              break;
+            case "used-mem":
+              console.log(key, this.readEncodedInt());
+              break;
+            case "aof-preamble":
+              console.log(key, this.readEncodedInt());
+              break;
+            default:
+              throw Error("unknown auxiliary field");
+          }
+          break;
+        }
+        case 0xfb:
+          console.log("keyspace", this.readEncodedInt());
+          console.log("expires", this.readEncodedInt());
+          this.readEntries();
+          break;
+        case 0xfe:
+          console.log("db selector", this.readEncodedInt());
+          break;
+        case 0xff:
+          eof = true;
+          break;
+        default:
+          throw Error("op not implemented: " + op);
+      }
+      if (eof) {
+        break;
+      }
+    }
   }
-
-  readString(length: number): string {
-    const value = this.buffer.toString(
-      "utf8",
-      this.offset,
-      this.offset + length
-    );
-    this.offset += length;
-    return value;
+  readEntries() {
+    while (this.index < this.data.length) {
+      let type = this.data[this.index++];
+      let expiration: Date | undefined;
+      if (type === 0xff) {
+        this.index--;
+        break;
+      } else if (type === 0xfc) {
+        // Expire time in milliseconds
+        expiration = new Date(this.readEncodedInt());
+        type = this.data[this.index++];
+      } else if (type === 0xfd) {
+        // Expire time in seconds
+        expiration = new Date(this.readEncodedInt() * 1000);
+        type = this.data[this.index++];
+      }
+      const key = this.readEncodedString();
+      switch (type) {
+        case 0: // string encoding
+          this.entries[key] = { value: this.readEncodedString(), expiration };
+          break;
+        default:
+          throw Error("type not implemented: " + type);
+      }
+    }
   }
-
-  readLength(): number {
-    const length = this.readByte();
-    if (length & 0x80) {
-      // Large length encoded in next bytes
-      if (length & 0x40) {
-        // Two-byte length
-        return ((length & 0x3f) << 8) | this.readByte();
-      } else {
-        // Five-byte length
-        return ((length & 0x3f) << 32) | this.readUInt32();
+  readEncodedInt(): number {
+    let length = 0;
+    const type = this.data[this.index] >> 6;
+    switch (type) {
+      case 0:
+        length = this.data[this.index++];
+        break;
+      case 1:
+        length =
+          (this.data[this.index++] & 0b00111111) |
+          (this.data[this.index++] << 6);
+        break;
+      case 2:
+        this.index++;
+        length =
+          (this.data[this.index++] << 24) |
+          (this.data[this.index++] << 16) |
+          (this.data[this.index++] << 8) |
+          this.data[this.index++];
+        break;
+      case 3: {
+        const bitType = this.data[this.index++] & 0b00111111;
+        length = this.data[this.index++];
+        if (bitType > 1) {
+          length |= this.data[this.index++] << 8;
+        }
+        if (bitType == 2) {
+          length |=
+            (this.data[this.index++] << 16) | (this.data[this.index++] << 24);
+        }
+        if (bitType > 2) {
+          throw Error("length not implemented");
+        }
+        break;
       }
     }
     return length;
   }
-}
-("settings.json");
-
-// function createRDBFile(filePath: string) {
-//   const buffer = Buffer.from([
-//     0x52,
-//     0x45,
-//     0x44,
-//     0x49,
-//     0x53, // "REDIS"
-//     0x30,
-//     0x30,
-//     0x30,
-//     0x39, // Version "0009"
-//     0xfe,
-//     0x00, // SELECTDB opcode, DB number 0
-//     0x00, // String type
-//     0x08, // Key length: 8 bytes
-//     0x74,
-//     0x65,
-//     0x73,
-//     0x74,
-//     0x5f,
-//     0x6b,
-//     0x65,
-//     0x79, // "test_key"
-//     0x0a, // Value length: 10 bytes
-//     0x74,
-//     0x65,
-//     0x73,
-//     0x74,
-//     0x5f,
-//     0x76,
-//     0x61,
-//     0x6c,
-//     0x75,
-//     0x65, // "test_value"
-//     0xff, // EOF opcode
-//   ]);
-
-//   fs.writeFileSync(path.resolve(__dirname, filePath), buffer);
-// }
-
-function createRDBFile(filePath: string) {
-  const buffer = [];
-
-  // RDB header
-  buffer.push(Buffer.from("REDIS"));
-  buffer.push(Buffer.from("0009"));
-
-  // SELECTDB opcode (0xFE) and DB number (0x00)
-  buffer.push(Buffer.from([0xfe, 0x00]));
-
-  // String key-value pair
-  const key = "test_key";
-  const value = "test_value";
-  const keyBuffer = Buffer.from(key, "utf8");
-  const valueBuffer = Buffer.from(value, "utf8");
-
-  // Type: String (0x00)
-  buffer.push(Buffer.from([0x00]));
-  // Key length
-  buffer.push(encodeLength(keyBuffer.length));
-  // Key
-  buffer.push(keyBuffer);
-  // Value length
-  buffer.push(encodeLength(valueBuffer.length));
-  // Value
-  buffer.push(valueBuffer);
-
-  // EOF opcode (0xFF)
-  buffer.push(Buffer.from([0xff]));
-
-  // Write to file
-  const finalBuffer = Buffer.concat(buffer);
-  fs.writeFileSync(path.resolve(__dirname, filePath), buffer.toString());
-}
-
-function encodeLength(length: number) {
-  if (length < 0x40) {
-    return Buffer.from([length]);
-  } else if (length < 0x4000) {
-    return Buffer.from([(length >> 8) | 0x80, length & 0xff]);
-  } else {
-    throw new Error("Length encoding for larger values not implemented");
+  readEncodedString(): string {
+    const length = this.readEncodedInt();
+    const str = bytesToString(this.data.slice(this.index, this.index + length));
+    this.index += length;
+    return str;
   }
-}
-export async function parseRDB(
-  filePath: string,
-  searchKey: string
-): Promise<any> {
-  createRDBFile(filePath);
-  const buffer = fs.readFileSync(filePath);
-  const reader = new BinaryReader(buffer);
-
-  // Read header
-  const header = reader.readString(5);
-  if (!header.startsWith("REDIS")) {
-    throw new Error("Invalid RDB file.");
-  }
-
-  // Read version
-  const version = reader.readString(4);
-  console.log(`RDB version: ${version}`);
-
-  // Parse the RDB file
-  while (reader.offset < buffer.length) {
-    const type = reader.readByte();
-    if (type === REDIS_RDB_OPCODE_EOF) {
-      break;
-    }
-
-    let key: string | null = null;
-
-    if (type === REDIS_RDB_OPCODE_SELECTDB) {
-      // Handle database selection
-      reader.readLength(); // Skip the DB selector
-    } else if (
-      type === REDIS_RDB_OPCODE_EXPIRETIME ||
-      type === REDIS_RDB_OPCODE_EXPIRETIME_MS
-    ) {
-      // Handle expiry times
-      reader.readUInt32(); // Skip the expiry time
-    } else {
-      // Read the key
-      key = reader.readString(reader.readLength());
-      const valueType = reader.readByte();
-
-      if (key === searchKey) {
-        if (valueType === RDB_TYPE_STRING) {
-          const valueLength = reader.readLength();
-          const value = reader.readString(valueLength);
-          return value;
-        }
-      } else {
-        // Skip the value if the key does not match
-        skipValue(reader, valueType);
-      }
-    }
-  }
-
-  throw new Error(`Key "${searchKey}" not found.`);
-}
-
-function skipValue(reader: BinaryReader, valueType: number): void {
-  if (valueType === RDB_TYPE_STRING) {
-    const valueLength = reader.readLength();
-    reader.readString(valueLength); // Skip the string value
-  } else {
-    // Add more types as needed
-    throw new Error(`Unsupported value type: ${valueType}`);
+  getEntries(): keyValueStore {
+    return this.entries;
   }
 }
