@@ -15,7 +15,7 @@ This project is a clone of the popular Redis server, implemented using the [Bun]
 
 ## Features
 
-- Supports basic Redis commands such as GET, SET, DEL, and PING.
+- Supports basic Redis commands such as GET, SET, DEL, KEYS, PING and many others.
 - Built using modern JavaScript with Bun.
 - Written in TypeScript for type safety and better developer experience.
 - Lightweight and easy to extend.
@@ -25,7 +25,7 @@ This project is a clone of the popular Redis server, implemented using the [Bun]
 ### Prerequisites
 
 - [Bun](https://bun.sh) installed on your system.
-- redis-tools for an esay interaction with the redis server
+- redis-tools for an easy interaction with the redis server
 
 ### Steps
 
@@ -45,36 +45,21 @@ This project is a clone of the popular Redis server, implemented using the [Bun]
 3. Run the app:
 
 ```sh
-   bun run app/main.ts
+   bun run dev
+   #or
+   bun run src/server.ts --dir <dir> --dbfilename <filename>
 ```
 
-# some commands to test
+## usage
+
+some commands to test
 
 ```sh
+redis-cli PING
+redis-cli ECHO something
 redis-cli SET mykey "Hello, World!"
 redis-cli GET mykey
-redis-cli PING
 redis-cli DEL mykey
-```
-
-### Project Structure
-
-```sh
-redis-server-clone/
-├── src/
-│ ├── server.ts
-│ ├── handlers/
-│ │ └── commandHandlers.ts
-│ ├── utils/
-│ │ └── parser.ts
-│ └── types/
-│ └── index.ts
-├── tests/
-│ └── server.test.ts
-├── .gitignore
-├── bun.lockb
-├── package.json
-├── README.md
-└── tsconfig.json
-
+redis-cli CONFIG GET dir
+redis-cli KEY "*"
 ```

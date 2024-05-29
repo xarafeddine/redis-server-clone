@@ -1,4 +1,4 @@
-import { loadRdb } from "./BinaryReader";
+import { loadRdb } from "./rdbParser";
 import { RedisStore } from "./store";
 import {
   arrToRESP,
