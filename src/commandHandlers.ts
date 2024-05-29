@@ -1,19 +1,21 @@
 import { loadRdb } from "./rdbParser";
 import { RedisStore } from "./store";
+import { StoreValue, StreamEntries } from "./types";
 import {
   arrToRESP,
   bulkString,
+  createExpirationDate,
+  getType,
+  isExpired,
   parseArguments,
+  parseStreamEntries,
   rdbConfig,
   simpleString,
 } from "./utils";
 
 // In-memory key-value store
-const store = new RedisStore();
 const kvStore = loadRdb(rdbConfig);
-Object.entries(kvStore).forEach(([key, { value }]) => {
-  store.set(key, value);
-});
+const store = new RedisStore(Object.entries(kvStore));
 
 export async function handleCommand(command: string[]): Promise<string> {
   const [cmd, ...args] = command;
@@ -33,9 +35,40 @@ export async function handleCommand(command: string[]): Promise<string> {
       return handleConfig(args);
     case "KEYS":
       return await handleRDB(args);
+    case "TYPE":
+      return handleTypes(args);
+    case "XADD":
+      return handleStreams(args);
     default:
       return "-ERR unknown command\r\n";
   }
+}
+
+function handleStreams(args: string[]) {
+  if (args.length < 4)
+    return "-ERR wrong number of arguments for 'xadd' command\r\n";
+  const [streamKey, ...rest] = args;
+  const streamValue = parseStreamEntries(rest);
+  const oldStream = store.get(streamKey);
+  if (oldStream) {
+    const parsedStream = JSON.parse(oldStream.value) as StreamEntries;
+    console.log("parsedStream", parsedStream);
+    const newStream = { ...streamValue, ...parsedStream };
+    store.set(streamKey, {
+      value: JSON.stringify(newStream),
+      expiration: oldStream.expiration,
+    });
+  }
+  store.set(streamKey, { value: JSON.stringify(streamValue) });
+  return bulkString(Object.keys(streamValue)[0]);
+}
+
+function handleTypes(args: string[]) {
+  if (args.length < 1)
+    return "-ERR wrong number of arguments for 'type' command\r\n";
+  const storeValue = store.get(args[0]);
+  if (!storeValue) return simpleString("none");
+  return simpleString(getType(storeValue?.value));
 }
 
 function handlePing(args: string[]): string {
@@ -47,14 +80,11 @@ function handleSet(args: string[]): string {
     return "-ERR wrong number of arguments for 'set' command\r\n";
   }
   const [key, value, option, time] = args;
-  store.set(key, value);
-  console.log(option, time);
+  const storeValue: StoreValue = { value };
   if (option?.toLowerCase() == "px" && typeof Number(time) === "number") {
-    console.log("timeout");
-    setTimeout(() => {
-      store.delete(key);
-    }, Number(time));
+    storeValue["expiration"] = createExpirationDate(Number(time));
   }
+  store.set(key, storeValue);
   return simpleString("OK");
 }
 
@@ -63,8 +93,13 @@ function handleGet(args: string[]): string {
     return "-ERR wrong number of arguments for 'get' command\r\n";
   }
   const key = args[0];
-  const value = store.get(key);
-  return bulkString(value);
+  const storeValue = store?.get(key);
+  if (!storeValue) return bulkString();
+  if (isExpired(storeValue?.expiration)) {
+    store.delete(key);
+    return bulkString();
+  }
+  return bulkString(storeValue.value);
 }
 
 function handleDel(args: string[]): string {
@@ -101,12 +136,6 @@ function handleConfig(args: string[]) {
 
 async function handleRDB(args: string[]) {
   const searchKey = args[0] || "*";
-  let response;
-  if (searchKey == "*") response = arrToRESP(store.getKeys());
-  else {
-    const value = store.get(searchKey);
-    response = arrToRESP(value == undefined ? [] : [value]);
-  }
-
-  return response;
+  if (searchKey == "*") return arrToRESP(store.getKeys());
+  return arrToRESP(store.getKeys().filter((key) => key.includes(searchKey)));
 }

@@ -3,7 +3,7 @@
   "description": "Build your own Redis challenge, from CodeCrafters",
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch  src/server.ts --dir /tmp/redis-files --dbfilename dump.rdb"
+    "dev": "bun run --watch  src/server.ts --dir $(pwd)/src/test/redis-files --dbfilename dump.rdb"
   },
   "dependencies": {
     "@types/bun": "^1.1.3",

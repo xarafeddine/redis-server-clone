@@ -62,4 +62,6 @@ redis-cli GET mykey
 redis-cli DEL mykey
 redis-cli CONFIG GET dir
 redis-cli KEY "*"
+redis-cli XADD stream_key 0-1 foo bar
+redis-cli TYPE stream_key
 ```

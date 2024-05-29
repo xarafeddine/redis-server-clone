@@ -1,15 +1,17 @@
-export class RedisStore {
-  private store: Map<string, string>;
+import { StoreValue } from "./types";
 
-  constructor() {
-    this.store = new Map();
+export class RedisStore {
+  private store: Map<string, StoreValue>;
+
+  constructor(initStore?: [string, StoreValue][]) {
+    this.store = new Map(initStore);
   }
 
-  set(key: string, value: string): void {
+  set(key: string, value: StoreValue): void {
     this.store.set(key, value);
   }
 
-  get(key: string): string | undefined {
+  get(key: string): StoreValue | undefined {
     return this.store.get(key);
   }
   getKeys() {

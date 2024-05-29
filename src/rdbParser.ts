@@ -1,9 +1,9 @@
 import * as fs from "fs";
 import path from "path";
-import { keyValueStore, serverConfig } from "./types";
+import { KeyValueStore, ServerConfig } from "./types";
 import { bytesToString } from "./utils";
 
-export function loadRdb(conf: serverConfig): keyValueStore {
+export function loadRdb(conf: ServerConfig): KeyValueStore {
   if (conf.dbfilename === "") {
     return {};
   }
@@ -16,12 +16,13 @@ class RDBParser {
   path: string;
   data: Uint8Array;
   index: number = 0;
-  entries: keyValueStore = {};
+  entries: KeyValueStore = {};
+
   constructor(path: string) {
     this.path = path;
     try {
       this.data = fs.readFileSync(this.path);
-    } catch (e:any) {
+    } catch (e: any) {
       console.log(`skipped reading RDB file: ${this.path}`);
       console.log(e?.message);
       this.data = new Uint8Array();
@@ -85,7 +86,9 @@ class RDBParser {
       }
     }
   }
+
   readEntries() {
+    const now = new Date();
     while (this.index < this.data.length) {
       let type = this.data[this.index++];
       let expiration: Date | undefined;
@@ -94,22 +97,48 @@ class RDBParser {
         break;
       } else if (type === 0xfc) {
         // Expire time in milliseconds
-        expiration = new Date(this.readEncodedInt());
+        const milliseconds = this.readUint64();
+        expiration = new Date(Number(milliseconds));
         type = this.data[this.index++];
       } else if (type === 0xfd) {
         // Expire time in seconds
-        expiration = new Date(this.readEncodedInt() * 1000);
+        const seconds = this.readUint32();
+        expiration = new Date(seconds * 1000);
         type = this.data[this.index++];
       }
       const key = this.readEncodedString();
       switch (type) {
-        case 0: // string encoding
-          this.entries[key] = { value: this.readEncodedString(), expiration };
+        case 0: {
+          // string encoding
+          const value = this.readEncodedString();
+          console.log(key, value, expiration);
+          if ((expiration ?? now) >= now) {
+            this.entries[key] = { value, expiration };
+          }
           break;
+        }
         default:
           throw Error("type not implemented: " + type);
       }
     }
+  }
+
+  readUint32(): number {
+    return (
+      this.data[this.index++] +
+      (this.data[this.index++] << 8) +
+      (this.data[this.index++] << 16) +
+      (this.data[this.index++] << 24)
+    );
+  }
+  readUint64(): bigint {
+    let result = BigInt(0);
+    let shift = BigInt(0);
+    for (let i = 0; i < 8; i++) {
+      result += BigInt(this.data[this.index++]) << shift;
+      shift += BigInt(8);
+    }
+    return result;
   }
   readEncodedInt(): number {
     let length = 0;
@@ -149,13 +178,14 @@ class RDBParser {
     }
     return length;
   }
+
   readEncodedString(): string {
     const length = this.readEncodedInt();
     const str = bytesToString(this.data.slice(this.index, this.index + length));
     this.index += length;
     return str;
   }
-  getEntries(): keyValueStore {
+  getEntries(): KeyValueStore {
     return this.entries;
   }
 }
