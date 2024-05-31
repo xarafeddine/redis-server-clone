@@ -64,4 +64,13 @@ redis-cli CONFIG GET dir
 redis-cli KEY "*"
 redis-cli XADD stream_key 0-1 foo bar
 redis-cli TYPE stream_key
+redis-cli XADD some_key "1-*" foo bar
+redis-cli XADD stream_key * foo bar #auto generated id
+redis-cli XRANGE stream_key 0-2 0-3
+redis-cli XRANGE some_key - 1526985054079
+redis-cli XRANGE some_key 1526985054079 +
+redis-cli XREAD streams stream_key other_stream_key 0-0 0-1
+redis-cli XREAD block 1000 streams some_key 1526985054069-0
+redis-cli XREAD block 0 streams some_key 1526985054069-0
+redis-cli XREAD block 1000 streams some_key $
 ```

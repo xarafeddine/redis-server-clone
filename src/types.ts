@@ -5,7 +5,13 @@ export type KeyValueStore = {
   };
 };
 
-export type StreamEntries = Record<string, Record<string, string>>;
+export type EntryData = Record<string, string>;
+// export type StreamEntry = {
+//   entryId: string;
+//   entryData: EntryData;
+// };
+
+export type StreamEntry = [string, string[]];
 
 export type StoreValue = {
   value: string;

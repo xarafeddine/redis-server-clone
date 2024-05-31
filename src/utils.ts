@@ -1,4 +1,4 @@
-import { ServerConfig, StreamEntries } from "./types";
+import { ServerConfig, StreamEntry } from "./types";
 
 export function parseRESP(buffer: Buffer): string[] {
   const data = buffer.toString();
@@ -30,6 +30,7 @@ export function parseRESP(buffer: Buffer): string[] {
 }
 
 export const simpleString = (reply: string) => `+${reply}\r\n`;
+export const simpleError = (reply: string) => `-ERR ${reply}\r\n`;
 export const bulkString = (reply?: string) =>
   reply ? `$${reply.length}\r\n${reply}\r\n` : "$-1\r\n";
 
@@ -93,10 +94,10 @@ export function getType(value: string): string {
     if (typeof parsedValue === "string") {
       return "string";
     } else if (Array.isArray(parsedValue)) {
+      if (parsedValue.some(([entryId]) => regxStreamId.test(entryId)))
+        return "stream";
       return "list";
     } else if (parsedValue !== null && typeof parsedValue === "object") {
-      if (Object.keys(parsedValue).some((key) => regxStreamId.test(key)))
-        return "stream";
       // Check if it is a set (all unique values)
       const isSet =
         new Set(Object.values(parsedValue)).size ===
@@ -119,35 +120,93 @@ export function getType(value: string): string {
   return "unknown";
 }
 
-export const regxStreamId = new RegExp(/^\d+-\d+$/);
+export const regxStreamId = new RegExp(/^(?:\d+)-(?:\d+|\*)$|^\*$/);
 
-export function parseStreamEntries(parts: string[]): StreamEntries {
-  // Initialize an empty object to hold the entries
-  const entries: StreamEntries = {};
+export function parseStreamEntries(parts: string[]): StreamEntry | null {
+  // Extract the entry ID
+  const [entryId, ...rest] = parts;
+  console.log(parts);
+  if (entryId === "0-0") return null;
+  if (!regxStreamId.test(entryId)) return null;
+  return [entryId, rest];
+}
 
-  // Initialize an index to start processing entries from
-  let i = 0;
-  while (i < parts.length) {
-    // Extract the entry ID
-    const entryID = parts[i];
-
-    // Initialize an empty object to hold the key-value pairs for the current entry
-    const entryData: Record<string, string> = {};
-
-    // Move to the first key-value pair for this entry
-    i++;
-
-    // Loop through the key-value pairs for this entry
-    while (i < parts.length && !regxStreamId.test(parts[i])) {
-      const key = parts[i];
-      const value = parts[i + 1];
-      entryData[key] = value;
-      i += 2;
+export function generateEntryId(
+  newEntryId: string,
+  oldEntryId?: string
+): string | null {
+  if (newEntryId === "*") newEntryId = `${Date.now()}-*`;
+  const [new_millisecondsTime, new_sequenceNumber] = newEntryId?.split("-");
+  if (!oldEntryId) {
+    if (new_sequenceNumber != "*") {
+      return newEntryId;
     }
-
-    // Add the entry data to the entries object
-    entries[entryID] = entryData;
+    return [new_millisecondsTime, new_millisecondsTime == "0" ? 1 : 0].join(
+      "-"
+    );
   }
 
-  return entries;
+  const [old_millisecondsTime, old_sequenceNumber] = oldEntryId?.split("-");
+
+  if (old_millisecondsTime === new_millisecondsTime) {
+    if (new_sequenceNumber == "*")
+      return [new_millisecondsTime, +old_sequenceNumber + 1].join("-");
+    return old_sequenceNumber < new_sequenceNumber ? newEntryId : null;
+  }
+
+  if (old_millisecondsTime > new_millisecondsTime) return null;
+  if (new_sequenceNumber == "*") return [new_millisecondsTime, 0].join("-");
+  return newEntryId;
+}
+
+export function getEntryRange(
+  entries: StreamEntry[],
+  startNum: number,
+  endNum?: number
+) {
+  let result: StreamEntry[] = [];
+  if (endNum === undefined) {
+    endNum = Infinity;
+    let [int, dec] = String(startNum).split(".");
+    startNum = +int + +`0.${1 + Number(dec) || 0}`;
+  }
+
+  console.log(startNum, endNum);
+  for (let [entryId, entryData] of entries) {
+    const entryIdNum = +entryId.replace("-", ".");
+
+    if (entryIdNum >= startNum && entryIdNum <= endNum)
+      result.push([entryId, entryData]);
+  }
+  return result;
+}
+
+export function toRESPEntryArray(data: StreamEntry[]): string {
+  let respArray: string[] = [];
+  respArray.push(`*${data.length}\r\n`);
+  for (const entry of data) {
+    const [id, keyValues] = entry;
+    respArray.push(`*2\r\n`);
+    respArray.push(`$${id.length}\r\n${id}\r\n`);
+    respArray.push(`*${keyValues.length}\r\n`);
+
+    for (let i = 0; i < keyValues.length; i += 2) {
+      const key = keyValues[i];
+      const value = keyValues[i + 1];
+      respArray.push(`$${key.length}\r\n${key}\r\n`);
+      respArray.push(`$${value.length}\r\n${value}\r\n`);
+    }
+  }
+
+  return respArray.join("");
+}
+
+export function toRESPStreamArray(streamArr: [string, StreamEntry[]][]) {
+  return `*${streamArr.length}\r\n${streamArr
+    .map(([streamKey, streamData]) => {
+      return `*2\r\n$${streamKey.length}\r\n${streamKey}\r\n${toRESPEntryArray(
+        streamData
+      )}`;
+    })
+    .join("")}`;
 }
