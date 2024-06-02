@@ -1,7 +1,8 @@
-import { loadRdb } from "./rdbParser";
-import { RedisStore } from "./store";
+import net from "net";
 import { StoreValue, StreamEntry } from "./types";
 import {
+  EMPTY_RDB,
+  RESPInt,
   arrToRESP,
   bulkString,
   createExpirationDate,
@@ -10,19 +11,20 @@ import {
   getType,
   isExpired,
   parseArguments,
+  parseRESP,
   parseStreamEntries,
-  rdbConfig,
+  serverParams,
   simpleError,
   simpleString,
   toRESPEntryArray,
   toRESPStreamArray,
 } from "./utils";
+import { replicaConnections, store } from "./main";
 
-// In-memory key-value store
-const kvStore = loadRdb(rdbConfig);
-const store = new RedisStore(Object.entries(kvStore));
-
-export async function handleCommand(command: string[]): Promise<string> {
+export async function handleCommand(
+  command: string[],
+  connection: net.Socket
+): Promise<string> {
   const [cmd, ...args] = command.join(" ").split(" ");
 
   switch (cmd.toUpperCase()) {
@@ -44,15 +46,107 @@ export async function handleCommand(command: string[]): Promise<string> {
       return handleTypes(args);
     case "XADD":
       return handleXadd(args);
-
     case "XRANGE":
       return handleXrange(args);
-
     case "XREAD":
       return await handleXread(args);
+    case "INFO":
+      return handleInfo(args);
+    case "REPLCONF":
+      return handleReplconf();
+    case "WAIT":
+      return await handleWait(args);
+
+    case "PSYNC":
+      connection.write(
+        simpleString(
+          `FULLRESYNC ${serverParams.master_replid} ${serverParams.master_repl_offset}`
+        )
+      );
+      connection.write(
+        Buffer.concat([
+          Buffer.from(`$${EMPTY_RDB.length}\r\n`, "utf-8"),
+          EMPTY_RDB,
+        ])
+      );
+
+      // connection.write(arrToRESP(["REPLCONF", "GETACK", "*"]));
+
+      replicaConnections.push(connection);
+      return "";
+
     default:
       return "-ERR unknown command\r\n";
   }
+}
+
+export async function handleMasterCommand(
+  receivedData: string,
+  connection: net.Socket,
+  offset: {
+    value: number;
+    isActive: boolean;
+  }
+) {
+  const command = parseRESP(receivedData);
+
+  console.log("zalat: ", command);
+  let i = 0;
+  while (i < command.length) {
+    console.log(command[i]);
+    if (command[i].toUpperCase() === "SET") {
+      handleSet(command.slice(i + 1, i + 3));
+      i += 3;
+    } else if (command[i].toUpperCase() === "DEL") {
+      handleDel(command.slice(i + 1, i + 3));
+      i += 3;
+    } else if (command[i].toUpperCase() === "GETACK") {
+      if (!offset.isActive) offset.value = 0;
+      connection.write(arrToRESP(["REPLCONF", "ACK", `${offset.value}`]));
+      offset.isActive = true;
+      i += 2;
+    } else i++;
+  }
+
+  // switch (command) {
+  //   case "SET":
+  //     return handleSet(args);
+  //   case "DEL":
+  //     return handleDel(args);
+  //   default:
+  //     return "-ERR unknown command\r\n";
+  // }
+}
+
+async function handleWait(args: string[]): Promise<string> {
+  if (args.length < 2)
+    return simpleError("wrong number of arguments for 'wait' command");
+  const [numReplica, timeout] = args;
+  return await new Promise((res, rej) => {
+    setTimeout(() => {
+      res(RESPInt(replicaConnections.length));
+    }, Number(timeout));
+    while (replicaConnections.length < Number(numReplica)) {
+      console.log(replicaConnections.length);
+    }
+    res(RESPInt(replicaConnections.length));
+  });
+}
+
+function handleReplconf() {
+  return simpleString("OK");
+}
+
+function handleInfo(args: string[]) {
+  if (args[0] === "replication") {
+    let role = "master";
+    const { master_replid, master_repl_offset } = serverParams;
+    if (!master_replid) role = "slave";
+    return bulkString(
+      `role:${role}\r\nmaster_replid:${master_replid}\r\nmaster_repl_offset:${master_repl_offset}`
+    );
+  }
+  return simpleString("");
 }
 
 async function handleXread(args: string[]) {
@@ -97,7 +191,7 @@ function xreadHelper(keyValues: string[]) {
     const storedStream = store.get(streamKey)?.value;
     if (!storedStream) continue; // return simpleError("Stream doesn't exist");
     const streamEntries = JSON.parse(storedStream) as StreamEntry[];
-    console.log("start", start);
+
     if (start === "$") {
       const [lastEntryId] = streamEntries.at(-1) || ["0-0"];
       keyValues[i + halfLen] = lastEntryId;
@@ -133,7 +227,7 @@ function handleXadd(args: string[]) {
   if (args.length < 4)
     return simpleError("wrong number of arguments for 'xadd' command");
   const [streamKey, ...rest] = args;
-  console.log(rest);
+
   const newStreamEntry = parseStreamEntries(rest);
   if (!newStreamEntry)
     return simpleError("The ID specified in XADD must be greater than 0-0");
@@ -141,7 +235,7 @@ function handleXadd(args: string[]) {
 
   if (oldStream) {
     const oldStreamEntries = JSON.parse(oldStream.value) as StreamEntry[];
-    console.log("parsedStream", oldStreamEntries);
+
     const lastStreamEntry = oldStreamEntries?.at(-1)!;
     const newEntryId = generateEntryId(newStreamEntry[0], lastStreamEntry[0]);
     if (newEntryId === null)
@@ -174,7 +268,7 @@ function handlePing(args: string[]): string {
   return args.length > 0 ? simpleString(args[0]) : simpleString("PONG");
 }
 
-function handleSet(args: string[]): string {
+async function handleSet(args: string[]): Promise<string> {
   if (args.length < 2) {
     return "-ERR wrong number of arguments for 'set' command\r\n";
   }
@@ -184,6 +278,10 @@ function handleSet(args: string[]): string {
     storeValue["expiration"] = createExpirationDate(Number(time));
   }
   store.set(key, storeValue);
+
+  replicaConnections.forEach(async (connection) => {
+    connection.write(arrToRESP(["SET", ...args]));
+  });
   return simpleString("OK");
 }
 
@@ -210,6 +308,9 @@ function handleDel(args: string[]): string {
     if (store.delete(key)) {
       deletedCount++;
     }
+  });
+  replicaConnections.forEach((connection) => {
+    connection.write(arrToRESP(["del", ...args]));
   });
   return `:${deletedCount}\r\n`;
 }

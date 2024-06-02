@@ -1,7 +1,8 @@
+import net from "net";
 import { ServerConfig, StreamEntry } from "./types";
+import { replicaConnections } from "./main";
 
-export function parseRESP(buffer: Buffer): string[] {
-  const data = buffer.toString();
+export function parseRESP(data: string): string[] {
   const lines = data.split("\r\n");
   const command: string[] = [];
 
@@ -33,6 +34,7 @@ export const simpleString = (reply: string) => `+${reply}\r\n`;
 export const simpleError = (reply: string) => `-ERR ${reply}\r\n`;
 export const bulkString = (reply?: string) =>
   reply ? `$${reply.length}\r\n${reply}\r\n` : "$-1\r\n";
+export const RESPInt = (reply: number) => `:${reply}\r\n`;
 
 export function arrToRESP(arr: string[]) {
   const len = arr.length;
@@ -55,7 +57,7 @@ export function parseArguments() {
 
   return params;
 }
-
+export const serverParams = parseArguments();
 export const rdbConfig: ServerConfig = {
   dir: parseArguments()["dir"] || "",
   dbfilename: parseArguments()["dbfilename"] || "",
@@ -125,7 +127,6 @@ export const regxStreamId = new RegExp(/^(?:\d+)-(?:\d+|\*)$|^\*$/);
 export function parseStreamEntries(parts: string[]): StreamEntry | null {
   // Extract the entry ID
   const [entryId, ...rest] = parts;
-  console.log(parts);
   if (entryId === "0-0") return null;
   if (!regxStreamId.test(entryId)) return null;
   return [entryId, rest];
@@ -171,7 +172,7 @@ export function getEntryRange(
     startNum = +int + +`0.${1 + Number(dec) || 0}`;
   }
 
-  console.log(startNum, endNum);
+  console.log(`fetching entries from ${startNum} to ${endNum}`);
   for (let [entryId, entryData] of entries) {
     const entryIdNum = +entryId.replace("-", ".");
 
@@ -210,3 +211,67 @@ export function toRESPStreamArray(streamArr: [string, StreamEntry[]][]) {
     })
     .join("")}`;
 }
+
+export function initMaster() {
+  const master = serverParams["replicaof"] || "";
+  const [url, port] = master.split(/\s|_|:/);
+  if (url && Number(port)) {
+    serverParams.masterUrl = url;
+    serverParams.masterPort = port;
+    return false;
+  }
+  serverParams.master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+  serverParams.master_repl_offset = "0";
+  return true;
+}
+
+export const EMPTY_RDB = Buffer.from(
+  "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2",
+  "hex"
+);
+
+// function handleWait(
+
+//   count: number,
+//   timeout: number
+// ): Promise<number> {
+//   let ackCount = 0;
+
+//   return new Promise((resolve) => {
+//     const timer = setTimeout(() => {
+//       console.log("timeout! count: ", ackCount);
+//       resolve(ackCount);
+//     }, timeout);
+//     const acknowledge = (increment: number) => {
+//       ackCount += increment;
+//       console.log("acknowledged: ", ackCount);
+//       if (ackCount >= count) {
+//         console.log("wait complete!");
+//         clearTimeout(timer);
+//         resolve(ackCount);
+//       }
+//     };
+//     for (const replica of replicaConnections) {
+//       if (replica.offset > 0) {
+//         (async function (replica) {
+//           try {
+//             console.log("probing replica with offset: ", replica.offset);
+//             const bytesSent = await replica.connection.write(
+//               encodeArray(["REPLCONF", "GETACK", "*"])
+//             );
+//             replica.offset += bytesSent;
+//             const tmpBuffer = new Uint8Array(128);
+//             await replica.connection.read(tmpBuffer); // Ignoring response for now
+//             acknowledge(1);
+//           } catch {
+//             replica.active = false;
+//             acknowledge(0);
+//           }
+//         })(replica);
+//       } else {
+//         cfg.ackCount++;
+//       }
+//     }
+//     acknowledge(0);
+//   });
+// }

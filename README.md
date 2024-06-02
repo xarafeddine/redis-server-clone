@@ -47,12 +47,13 @@ This project is a clone of the popular Redis server, implemented using the [Bun]
 ```sh
    bun run dev
    #or
-   bun run src/server.ts --dir <dir> --dbfilename <filename>
+   bun run src/main.ts --dir <dir> --dbfilename <filename> --port <port>
 ```
 
 ## usage
 
 some commands to test
+using redis-tools
 
 ```sh
 redis-cli PING
@@ -74,3 +75,8 @@ redis-cli XREAD block 1000 streams some_key 1526985054069-0
 redis-cli XREAD block 0 streams some_key 1526985054069-0
 redis-cli XREAD block 1000 streams some_key $
 ```
+using linux commands
+not you have to send data as RESP ENCODED VALUES
+nc localhost 3000
+telnet localhost 8124
+curl -v telnet://localhost:3000 --data "Hello from client"
