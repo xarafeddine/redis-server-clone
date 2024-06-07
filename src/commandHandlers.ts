@@ -3,6 +3,7 @@ import { StoreValue, StreamEntry } from "./types";
 import {
   EMPTY_RDB,
   RESPInt,
+  WaitHelper,
   arrToRESP,
   bulkString,
   createExpirationDate,
@@ -13,13 +14,14 @@ import {
   parseArguments,
   parseRESP,
   parseStreamEntries,
+  propagate,
   serverParams,
   simpleError,
   simpleString,
   toRESPEntryArray,
   toRESPStreamArray,
 } from "./utils";
-import { replicaConnections, store } from "./main";
+import { serverConfig, store } from "./main";
 
 export async function handleCommand(
   command: string[],
@@ -53,14 +55,14 @@ export async function handleCommand(
     case "INFO":
       return handleInfo(args);
     case "REPLCONF":
-      return handleReplconf();
+      return handleReplconf(args);
     case "WAIT":
       return await handleWait(args);
 
     case "PSYNC":
       connection.write(
         simpleString(
-          `FULLRESYNC ${serverParams.master_replid} ${serverParams.master_repl_offset}`
+          `FULLRESYNC ${serverConfig.master_replid} ${serverConfig.offset}`
         )
       );
       connection.write(
@@ -72,7 +74,7 @@ export async function handleCommand(
 
       // connection.write(arrToRESP(["REPLCONF", "GETACK", "*"]));
 
-      replicaConnections.push(connection);
+      serverConfig.replicas.push({ connection, offset: 0, active: true });
       return "";
 
     default:
@@ -82,11 +84,7 @@ export async function handleCommand(
 
 export async function handleMasterCommand(
   receivedData: string,
-  connection: net.Socket,
-  offset: {
-    value: number;
-    isActive: boolean;
-  }
+  connection: net.Socket
 ) {
   const command = parseRESP(receivedData);
 
@@ -101,49 +99,42 @@ export async function handleMasterCommand(
       handleDel(command.slice(i + 1, i + 3));
       i += 3;
     } else if (command[i].toUpperCase() === "GETACK") {
-      if (!offset.isActive) offset.value = 0;
-      connection.write(arrToRESP(["REPLCONF", "ACK", `${offset.value}`]));
-      offset.isActive = true;
+      if (!serverConfig.getAck) serverConfig.offset = 0;
+      connection.write(
+        arrToRESP(["REPLCONF", "ACK", `${serverConfig.offset}`])
+      );
+      serverConfig.getAck = true;
       i += 2;
     } else i++;
   }
-
-  // switch (command) {
-  //   case "SET":
-  //     return handleSet(args);
-  //   case "DEL":
-  //     return handleDel(args);
-  //   default:
-  //     return "-ERR unknown command\r\n";
-  // }
 }
 
 async function handleWait(args: string[]): Promise<string> {
   if (args.length < 2)
     return simpleError("wrong number of arguments for 'wait' command");
   const [numReplica, timeout] = args;
-  return await new Promise((res, rej) => {
-    setTimeout(() => {
-      res(RESPInt(replicaConnections.length));
-    }, Number(timeout));
-    while (replicaConnections.length < Number(numReplica)) {
-      console.log(replicaConnections.length);
-    }
-    res(RESPInt(replicaConnections.length));
-  });
+
+  const result = await WaitHelper(serverConfig, +numReplica, +timeout);
+  return RESPInt(result);
 }
 
-function handleReplconf() {
+function handleReplconf(args: string[]) {
+  if (args[0].toUpperCase() === "ACK") {
+    // assynchronously checked inside handleWait!
+    serverConfig.ackCount++;
+
+    // no reply!
+    return "";
+  }
   return simpleString("OK");
 }
 
 function handleInfo(args: string[]) {
   if (args[0] === "replication") {
-    let role = "master";
-    const { master_replid, master_repl_offset } = serverParams;
-    if (!master_replid) role = "slave";
     return bulkString(
-      `role:${role}\r\nmaster_replid:${master_replid}\r\nmaster_repl_offset:${master_repl_offset}`
+      `role:${serverConfig.role}\r\nmaster_replid:${
+        serverConfig.master_replid
+      }\r\nmaster_repl_offset:${0}`
     );
   }
   return simpleString("");
@@ -279,9 +270,7 @@ async function handleSet(args: string[]): Promise<string> {
   }
   store.set(key, storeValue);
 
-  replicaConnections.forEach(async (connection) => {
-    connection.write(arrToRESP(["SET", ...args]));
-  });
+  propagate(serverConfig, ["SET", ...args]);
   return simpleString("OK");
 }
 
@@ -309,9 +298,9 @@ function handleDel(args: string[]): string {
       deletedCount++;
     }
   });
-  replicaConnections.forEach((connection) => {
-    connection.write(arrToRESP(["del", ...args]));
-  });
+  
+  propagate(serverConfig, ["DEL", ...args]);
+
   return `:${deletedCount}\r\n`;
 }
 

@@ -2,29 +2,42 @@ import net from "net";
 import { handleCommand, handleMasterCommand } from "./commandHandlers";
 import {
   arrToRESP,
-  initMaster,
+  getBytes,
+  initServer,
   parseRESP,
-  rdbConfig,
   serverParams,
   simpleString,
 } from "./utils";
 import { loadRdb } from "./rdbParser";
 import { RedisStore } from "./store";
+import { ServerConfig } from "./types";
 
-const PORT = Number(serverParams.port) || 6379;
-const HOST = "127.0.0.1";
+export const isMaster = initServer();
+
+export const serverConfig: ServerConfig = {
+  dir: serverParams?.dir || "",
+  dbfilename: serverParams?.dbfilename || "",
+  port: Number(serverParams?.port) || 6379,
+  host: "127.0.0.1",
+  role: serverParams?.role || "master",
+  replicaOfHost: serverParams?.replicaOfHost || "",
+  replicaOfPort: Number(serverParams.replicaOfPort),
+  master_replid: serverParams?.master_replid || "",
+  getAck: false,
+  offset: 0,
+  replicas: [],
+  ackCount: 0,
+};
 
 // In-memory key-value store
-const kvStore = loadRdb(rdbConfig);
+const kvStore = loadRdb(serverConfig);
 export const store = new RedisStore(Object.entries(kvStore));
-export const replicaConnections: net.Socket[] = [];
 
-export const isMaster = initMaster();
 if (!isMaster) {
   let fist_REPLCONF_sent = false;
-  const offset = { value: 0, isActive: false };
+
   const client = net.createConnection(
-    { port: +serverParams.masterPort },
+    { port: serverConfig.replicaOfPort },
     () => {
       console.log("-client: Connected to the master server");
       client.write(arrToRESP(["ping"]));
@@ -33,11 +46,13 @@ if (!isMaster) {
 
   client.on("data", async (data) => {
     const receivedData = data.toString();
-    offset.value += Buffer.byteLength(receivedData, "utf8");
+    serverConfig.offset += getBytes(receivedData);
     console.log("-client: Received from the master server:", receivedData);
 
     if (receivedData == simpleString("PONG"))
-      client.write(arrToRESP(["REPLCONF", "listening-port", `${PORT}`]));
+      client.write(
+        arrToRESP(["REPLCONF", "listening-port", `${serverConfig.port}`])
+      );
     else if (receivedData == simpleString("OK")) {
       if (!fist_REPLCONF_sent) {
         client.write(arrToRESP(["REPLCONF", "capa", "psync2"]));
@@ -45,7 +60,7 @@ if (!isMaster) {
       } else {
         client.write(arrToRESP(["PSYNC", "?", "-1"]));
       }
-    } else handleMasterCommand(receivedData, client, offset);
+    } else handleMasterCommand(receivedData, client);
   });
 
   client.on("end", () => {
@@ -64,6 +79,7 @@ const server = net.createServer((connection: net.Socket) => {
   // Handle data received from the client
   connection.on("data", async (data) => {
     console.log("Received data:", parseRESP(data.toString()));
+    // serverConfig.offset += getBytes(data.toString());
 
     try {
       const command = parseRESP(data.toString());
@@ -89,6 +105,8 @@ const server = net.createServer((connection: net.Socket) => {
 });
 
 // Start the server
-server.listen(PORT, HOST, () => {
-  console.log(`Server is listening on ${HOST}:${PORT}`);
+server.listen(serverConfig.port, serverConfig.host, () => {
+  console.log(
+    `Server is listening on ${serverConfig.host}:${serverConfig.port}`
+  );
 });

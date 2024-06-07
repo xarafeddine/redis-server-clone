@@ -1,6 +1,9 @@
-import net from "net";
 import { ServerConfig, StreamEntry } from "./types";
-import { replicaConnections } from "./main";
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+export const strToBytes = encoder.encode.bind(encoder);
+export const bytesToStr = decoder.decode.bind(decoder);
 
 export function parseRESP(data: string): string[] {
   const lines = data.split("\r\n");
@@ -58,11 +61,6 @@ export function parseArguments() {
   return params;
 }
 export const serverParams = parseArguments();
-export const rdbConfig: ServerConfig = {
-  dir: parseArguments()["dir"] || "",
-  dbfilename: parseArguments()["dbfilename"] || "",
-};
-// export const RDBFilePath = path.join(rdbConfig.dir, rdbConfig.dbfilename);
 
 export function stringToBytes(s: string): Uint8Array {
   return new Uint8Array(s.split("").map((s: string) => s.charCodeAt(0)));
@@ -212,16 +210,18 @@ export function toRESPStreamArray(streamArr: [string, StreamEntry[]][]) {
     .join("")}`;
 }
 
-export function initMaster() {
+export function initServer() {
   const master = serverParams["replicaof"] || "";
   const [url, port] = master.split(/\s|_|:/);
   if (url && Number(port)) {
-    serverParams.masterUrl = url;
-    serverParams.masterPort = port;
+    serverParams.replicaOfHost = url;
+    serverParams.replicaOfPort = port;
+    serverParams.role = "slave";
     return false;
   }
   serverParams.master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
   serverParams.master_repl_offset = "0";
+  serverParams.role = "master";
   return true;
 }
 
@@ -230,48 +230,58 @@ export const EMPTY_RDB = Buffer.from(
   "hex"
 );
 
-// function handleWait(
+export function WaitHelper(
+  cfg: ServerConfig,
+  count: number,
+  timeout: number
+): Promise<number> {
+  cfg.ackCount = 0;
+  cfg.replicas = cfg.replicas.filter((r) => r.active);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      console.log("timeout! count: ", cfg.ackCount);
+      resolve(cfg.ackCount);
+    }, timeout);
+    const acknowledge = () => {
+      console.log("acknowledged: ", cfg.ackCount);
+      if (cfg.ackCount >= count) {
+        console.log("wait complete!");
+        clearTimeout(timer);
+        resolve(cfg.ackCount);
+      }
+    };
+    for (const replica of cfg.replicas) {
+      if (replica.offset > 0) {
+        try {
+          console.log("probing replica with offset: ", replica.offset);
+          const res = arrToRESP(["REPLCONF", "GETACK", "*"]);
+          const bytesSent = getBytes(res);
+          replica.connection.write(res);
+          replica.offset += bytesSent;
+        } catch {
+          replica.active = false;
+        }
+        acknowledge();
+      } else {
+        cfg.ackCount++;
+      }
+    }
+    acknowledge();
+  });
+}
+export function propagate(cfg: ServerConfig, cmd: string[]) {
+  cfg.replicas = cfg.replicas.filter((r) => r.active);
+  for (const replica of cfg.replicas) {
+    try {
+      replica.connection.write(arrToRESP(cmd));
+      const bytesSent = getBytes(arrToRESP(cmd));
+      replica.offset += bytesSent;
+    } catch {
+      replica.active = false;
+    }
+  }
+}
 
-//   count: number,
-//   timeout: number
-// ): Promise<number> {
-//   let ackCount = 0;
-
-//   return new Promise((resolve) => {
-//     const timer = setTimeout(() => {
-//       console.log("timeout! count: ", ackCount);
-//       resolve(ackCount);
-//     }, timeout);
-//     const acknowledge = (increment: number) => {
-//       ackCount += increment;
-//       console.log("acknowledged: ", ackCount);
-//       if (ackCount >= count) {
-//         console.log("wait complete!");
-//         clearTimeout(timer);
-//         resolve(ackCount);
-//       }
-//     };
-//     for (const replica of replicaConnections) {
-//       if (replica.offset > 0) {
-//         (async function (replica) {
-//           try {
-//             console.log("probing replica with offset: ", replica.offset);
-//             const bytesSent = await replica.connection.write(
-//               encodeArray(["REPLCONF", "GETACK", "*"])
-//             );
-//             replica.offset += bytesSent;
-//             const tmpBuffer = new Uint8Array(128);
-//             await replica.connection.read(tmpBuffer); // Ignoring response for now
-//             acknowledge(1);
-//           } catch {
-//             replica.active = false;
-//             acknowledge(0);
-//           }
-//         })(replica);
-//       } else {
-//         cfg.ackCount++;
-//       }
-//     }
-//     acknowledge(0);
-//   });
-// }
+export function getBytes(receivedData: string) {
+  return Buffer.byteLength(receivedData, "utf8");
+}

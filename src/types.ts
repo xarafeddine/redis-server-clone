@@ -1,3 +1,4 @@
+import net from "net";
 export type KeyValueStore = {
   [key: string]: {
     value: string;
@@ -21,4 +22,20 @@ export type StoreValue = {
 export type ServerConfig = {
   dir: string;
   dbfilename: string;
+  port: number;
+  host: string;
+  role: string;
+  replicaOfHost: string;
+  replicaOfPort: number;
+  master_replid: string;
+  getAck: boolean;
+  offset: number;
+  replicas: replicaState[];
+  ackCount: number;
+};
+
+type replicaState = {
+  connection: net.Socket;
+  offset: number;
+  active: boolean;
 };

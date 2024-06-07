@@ -82,7 +82,10 @@ redis-cli XREAD block 0 streams some_key 1526985054069-0
 redis-cli XREAD block 1000 streams some_key $
 
 # Support multiple replicas
-redis-cli -p <PORT> info replication
+redis-cli -p <PORT> <COMMAND> # choose a replica to connect with 
+redis-cli info replication # get information about a replica
+redis-cli WAIT 3 500 # (wait until either 3 replicas has processed previous commands or 500ms have passed)
+
 ```
 
 ### Using other linux tools
